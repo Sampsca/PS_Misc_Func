@@ -1,0 +1,125 @@
+//////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////      ps_misc_func      /////////////////////////////
+////////////////////////////          v0.0.2          ////////////////////////////
+//////////////////////////// Copyright (c) 2017 Sam.  ////////////////////////////
+////////////////////////////          WTFPL           ////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////
+
+
+//////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////    ps_concat_str    ///////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////
+// This pair of WeiDU functions (equivalent action and patch varieties) concatenates two strings. 
+//   STR_VAR str is appended to the end of STR_VAR var and the new var is returned.
+//   These functions have been tested to achieve the desired result as quickly as possible,
+//     at the cost of a slightly longer code length than is absolutely necessary.
+//////////////////////////////////////////////////////////////////////////////////
+DEFINE_ACTION_FUNCTION ps_concat_str STR_VAR var = "" str = "" RET var BEGIN
+  OUTER_INNER_PATCH_SAVE var ~%var%~ BEGIN
+    sz = BUFFER_LENGTH
+	strsz = STRING_LENGTH ~%str%~
+	INSERT_BYTES sz strsz
+	WRITE_ASCIIE sz ~%str%~
+  END
+END
+DEFINE_PATCH_FUNCTION ps_concat_str STR_VAR var = "" str = "" RET var BEGIN
+  INNER_PATCH_SAVE var ~%var%~ BEGIN
+    sz = BUFFER_LENGTH
+	strsz = STRING_LENGTH ~%str%~
+	INSERT_BYTES sz strsz
+	WRITE_ASCIIE sz ~%str%~
+  END
+END
+
+//////////////////////////////////////////////////////////////////////////////////
+///////////////////////////    ps_zlib_(de)compress    ///////////////////////////
+//////////////////////////////////////////////////////////////////////////////////
+// This pair of WeiDU patch functions can Z-lib compress and then decompress arbitrary files.
+//   Large mod files can be loslessly compressed, shipped with the mod, then uncompressed at install
+//     time (as a simple patch function) using WeiDU native code.
+//   To be compressed, the file must not already look compressed (have the string ~CV1  ~ at offset 0x3).
+//   To be decompressed, the file must look like it has already been compressed (have the string ~CV1  ~ at offset 0x3).
+//   The following restrictions also apply:  the decompressed file size must fit in a LONG, and only the first 3
+//     characters of the file extension will be stored in the compressed file's header.
+//////////////////////////////////////////////////////////////////////////////////
+DEFINE_PATCH_FUNCTION ps_zlib_compress BEGIN
+  READ_ASCII 0x3 sgc (1) // Compressed signature flag
+  READ_ASCII 0x4 vs (4) // Version
+  PATCH_IF (~%sgc%~ STRING_EQUAL_CASE ~C~ = 1) AND (~%vs%~ STRING_EQUAL_CASE ~V1  ~ = 1) BEGIN // File is already Z-lib compressed
+    PATCH_PRINT ~%SOURCE_FILESPEC% appears to already be Z-lib compressed.  It will not be compressed again.~
+  END ELSE BEGIN
+    dl = SOURCE_SIZE // Data length
+	SPRINT sg ~%SOURCE_EXT%   ~
+	TO_UPPER sg
+    COMPRESS_REPLACE_FILE 0 dl 9
+    INSERT_BYTES 0x0 0xc
+    WRITE_ASCIIE 0x0 ~%sg%~ #3
+	WRITE_ASCII 0x3 ~CV1  ~
+    WRITE_LONG 0x8 dl
+  END
+END
+DEFINE_PATCH_FUNCTION ps_zlib_decompress BEGIN
+  READ_ASCII 0x3 sgc (1) // Compressed signature flag
+  READ_ASCII 0x4 vs (4) // Version
+  PATCH_IF (~%sgc%~ STRING_EQUAL_CASE ~C~ = 1) AND (~%vs%~ STRING_EQUAL_CASE ~V1  ~ = 1) BEGIN // File is Z-lib compressed
+    READ_LONG 0x8 dl //Uncompressed data length
+    DECOMPRESS_REPLACE_FILE 0xc (SOURCE_SIZE - 0xc) dl
+  END ELSE BEGIN
+    PATCH_PRINT ~%SOURCE_FILESPEC% does not appear to be Z-lib compressed.~
+  END
+END
+
+//////////////////////////////////////////////////////////////////////////////////
+///////////////////////////    ps_bitmap_swap_pixel    ///////////////////////////
+///////////////////////////                            ///////////////////////////
+///////////////////////////  V0.1   Updated: 20170718  ///////////////////////////
+//////////////////////////////////////////////////////////////////////////////////
+// This WeiDU Patch function swaps the pixels pointing to palette index INT_VAR 'swapfrom' to INT_VAR 'swapto'.
+//   The bitmap being patched should be a 4-bit paletted Microsoft Windows 3.x bitmap (BMP Version 3) with no compression
+//     (such as the search map for an ARE file).
+//   Special thanks to Argent77 for code to read/write nibbles.
+//////////////////////////////////////////////////////////////////////////////////
+DEFINE_PATCH_FUNCTION ~ps_bitmap_swap_pixel~ INT_VAR swapfrom = 0 swapto = 0 BEGIN
+  /*This function rewrites nibbles in pairs.  This means that if the image width is an odd number of pixels and you are swapping them from palette entry 0 to some other palette entry, one nibble of padding will be overwritten by a non-zero number at the end of the line.  While that makes this implementation imperfect, it also isn’t harmful and since fixing it would complicate (and thus slow down) the code, I’m disinclined to do anything about it.*/
+  READ_ASCII 0x0 sg (2) //Signature
+  PATCH_IF (~%sg%~ STRING_EQUAL_CASE ~BM~ = 1) BEGIN
+    //PATCH_PRINT ~Processing %SOURCE_FILE%...~
+    READ_SHORT 0x1c bc //Bit count
+    READ_LONG 0x1e cp //Compression
+    PATCH_IF (bc = 4) AND (cp = 0) BEGIN // Bitmap is 4-bit and uncompressed
+      READ_LONG 0xa fd //Raster data offset
+      READ_LONG 0x12 qw //Width
+      PATCH_IF (qw MODULO 2 > 0) BEGIN
+        qw = qw / 2 + 1
+      END ELSE BEGIN
+        qw = qw / 2
+      END
+      df = (qw / 4) * 4
+      PATCH_IF df < qw BEGIN
+        lz = df + 4 //Line size
+        df = lz - qw //Byte difference
+      END ELSE BEGIN
+        lz = qw
+        df = 0
+      END
+      READ_LONG 0x16 qh //Height
+      FOR (k1 = qh; k1 > 0; k1 -= 1) BEGIN //Row height loop
+        FOR (k2 = 0; k2 < qw; k2 += 1) BEGIN //Row width loop
+          offset = (fd + (k1 - 1) * (qw + df) + k2) //Last row first
+          SET nibbleL = (BYTE_AT offset) & 0x0f
+          SET nibbleH = ((BYTE_AT offset) >> 4) & 0x0f
+          PATCH_IF (nibbleL = swapfrom) BEGIN
+            WRITE_BYTE offset ((THIS & 0xf0) | swapto)
+          END
+          PATCH_IF (nibbleH = swapfrom) BEGIN
+            WRITE_BYTE offset ((THIS & 0x0f) | (swapto << 4))
+          END
+        END
+      END
+    END ELSE BEGIN
+      PATCH_PRINT ~Bitmap %SOURCE_FILE% is not 4-bit or is compressed - check the file.~
+    END
+  END ELSE BEGIN
+    PATCH_PRINT ~%SOURCE_FILE% is not a valid bitmap - check the file.~
+  END
+END    // End of ps_bitmap_swap_pixel
