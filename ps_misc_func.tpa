@@ -1,8 +1,8 @@
 //////////////////////////////////////////////////////////////////////////////////
-/////////////////////////////      ps_misc_func      /////////////////////////////
-////////////////////////////          v0.0.2          ////////////////////////////
-//////////////////////////// Copyright (c) 2017 Sam.  ////////////////////////////
-////////////////////////////          WTFPL           ////////////////////////////
+//////////////////////////         ps_misc_func          /////////////////////////
+//////////////////////////            v0.0.3             /////////////////////////
+////////////////////////// Copyright (c) 2017-2021 Sam.  /////////////////////////
+//////////////////////////            WTFPL              /////////////////////////
 //////////////////////////////////////////////////////////////////////////////////
 
 
@@ -17,17 +17,17 @@
 DEFINE_ACTION_FUNCTION ps_concat_str STR_VAR var = "" str = "" RET var BEGIN
   OUTER_INNER_PATCH_SAVE var ~%var%~ BEGIN
     sz = BUFFER_LENGTH
-	strsz = STRING_LENGTH ~%str%~
-	INSERT_BYTES sz strsz
-	WRITE_ASCIIE sz ~%str%~
+    strsz = STRING_LENGTH ~%str%~
+    INSERT_BYTES sz strsz
+    WRITE_ASCIIE sz ~%str%~
   END
 END
 DEFINE_PATCH_FUNCTION ps_concat_str STR_VAR var = "" str = "" RET var BEGIN
   INNER_PATCH_SAVE var ~%var%~ BEGIN
     sz = BUFFER_LENGTH
-	strsz = STRING_LENGTH ~%str%~
-	INSERT_BYTES sz strsz
-	WRITE_ASCIIE sz ~%str%~
+    strsz = STRING_LENGTH ~%str%~
+    INSERT_BYTES sz strsz
+    WRITE_ASCIIE sz ~%str%~
   END
 END
 
@@ -49,12 +49,12 @@ DEFINE_PATCH_FUNCTION ps_zlib_compress BEGIN
     PATCH_PRINT ~%SOURCE_FILESPEC% appears to already be Z-lib compressed.  It will not be compressed again.~
   END ELSE BEGIN
     dl = SOURCE_SIZE // Data length
-	SPRINT sg ~%SOURCE_EXT%   ~
-	TO_UPPER sg
+    SPRINT sg ~%SOURCE_EXT%   ~
+    TO_UPPER sg
     COMPRESS_REPLACE_FILE 0 dl 9
     INSERT_BYTES 0x0 0xc
     WRITE_ASCIIE 0x0 ~%sg%~ #3
-	WRITE_ASCII 0x3 ~CV1  ~
+    WRITE_ASCII 0x3 ~CV1  ~
     WRITE_LONG 0x8 dl
   END
 END
@@ -123,3 +123,63 @@ DEFINE_PATCH_FUNCTION ~ps_bitmap_swap_pixel~ INT_VAR swapfrom = 0 swapto = 0 BEG
     PATCH_PRINT ~%SOURCE_FILE% is not a valid bitmap - check the file.~
   END
 END    // End of ps_bitmap_swap_pixel
+
+/* =================================================================================================================================================================== *
+ *  FUNCTION ps_recursive_search_ex                                                                                                                                    *
+ * ------------------------------------------------------------------------------------------------------------------------------------------------------------------- *
+ *  This is a WeiDU action function that will recursively search into a parent directory and report how many files/directories that match the given RegEx are found.   *
+ * ------------------------------------------------------------------------------------------------------------------------------------------------------------------- *
+ *   INT_VAR                                                                                                                                                           *
+ *      - IncludeFiles indicates whether files should be included in the returned Count and FileDirList.  0=NO | 1=YES                                                 *
+ *      - IncludeDirs indicates whether directories should be included in the returned Count and FileDirList.  0=NO | 1=YES                                            *
+ *      - IncludeParentFiles indicates whether files in ParentDir should be included in the returned Count and FileDirList.  0=NO | 1=YES                              *
+ *   STR_VAR                                                                                                                                                           *
+ *      - ParentDir is a string containing the name of the parent directory that will be recursively searched.                                                         *
+ *      - ChildDirRegEx is a string containing the RegEx of child directories to search within ParentDir.                                                              *
+ *      - FileRegex is a string containing the RegEx of files to match.                                                                                                *
+ *      - Delimiter is a string containing the characters to use to delimit files/directories in FileDirList.                                                          *
+ *   RET                                                                                                                                                               *
+ *      - Count is the total Count of files/directories found.                                                                                                         *
+ *      - FileDirList is the Delimited list of files/directories found.                                                                                                *
+ *   Last Updated 20210416                                                                                                                                             *
+ * =================================================================================================================================================================== */
+
+DEFINE_ACTION_FUNCTION ps_recursive_search_ex
+    INT_VAR IncludeFiles       = 1
+            IncludeDirs        = 0
+            IncludeParentFiles = 1
+    STR_VAR ParentDir          = ""
+            ChildDirRegEx      = ""
+            FileRegEx          = "^.+$"
+            Delimiter          = EVAL "%WNL%"
+    RET     Count
+            FileDirList
+BEGIN
+
+  OUTER_SET Count = 0
+  OUTER_TEXT_SPRINT FileDirList ~~
+  ACTION_IF (IncludeFiles = 1) AND (IncludeParentFiles = 1) BEGIN
+    ACTION_BASH_FOR ~%ParentDir%~ ~%FileRegEx%~ BEGIN
+      OUTER_SET Count += 1
+      OUTER_TEXT_SPRINT FileDirList ~%FileDirList%%Delimiter%%BASH_FOR_FILESPEC%~
+    END
+  END
+  ACTION_CLEAR_ARRAY  ChildDir
+  GET_DIRECTORY_ARRAY ChildDir ~%ParentDir%~ ~%ChildDirRegEx%~
+  ACTION_PHP_EACH ChildDir AS dirfrom => dirC BEGIN
+    OUTER_SNPRINT "-1" LastChar ~%dirC%~
+    ACTION_IF (~%LastChar%~ STRING_EQUAL_CASE ~.~ = 0) BEGIN
+      ACTION_IF (IncludeDirs = 1) BEGIN
+        OUTER_SET Count += 1
+        OUTER_TEXT_SPRINT FileDirList ~%FileDirList%%Delimiter%%dirC%~
+      END
+      LAF ps_recursive_search_ex INT_VAR IncludeFiles IncludeDirs IncludeParentFiles = 1 STR_VAR ParentDir = EVAL "%dirC%" ChildDirRegEx = "" FileRegEx Delimiter RET CountN = %Count% FileDirListN = %FileDirList% END
+      OUTER_SET Count += CountN
+      OUTER_TEXT_SPRINT FileDirList ~%FileDirList%%Delimiter%%FileDirListN%~
+    END
+  END
+  OUTER_INNER_PATCH_SAVE FileDirList ~%FileDirList%~ BEGIN
+    REPLACE_TEXTUALLY ~\(%Delimiter%\)+~ ~%Delimiter%~
+  END
+
+END
